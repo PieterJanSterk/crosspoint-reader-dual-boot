@@ -21,7 +21,7 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Recents, File transfer, Settings
+  int count = 4 + otaAppCount;  // File Browser, Recents, File transfer, Settings, OTA apps
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -112,6 +112,7 @@ void HomeActivity::onEnter() {
   Activity::onEnter();
 
   hasOpdsServers = OPDS_STORE.hasServers();
+  otaAppCount = detectOtaApps(otaApps, MAX_OTA_APPS);
 
   selectorIndex = 0;
 
@@ -206,6 +207,11 @@ void HomeActivity::loop() {
       onFileTransferOpen();
     } else if (menuSelectedIndex == settingsIdx) {
       onSettingsOpen();
+    } else {
+      int otaIdx = menuSelectedIndex - settingsIdx - 1;
+      if (otaIdx >= 0 && otaIdx < otaAppCount) {
+        switchToOtaApp(otaApps[otaIdx].partitionSubtype);
+      }
     }
   }
 }
@@ -232,6 +238,11 @@ void HomeActivity::render(RenderLock&&) {
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
     menuIcons.insert(menuIcons.begin() + 2, Library);
+  }
+
+  for (int i = 0; i < otaAppCount; i++) {
+    menuItems.push_back(otaApps[i].name);
+    menuIcons.push_back(Text);
   }
 
   GUI.drawButtonMenu(

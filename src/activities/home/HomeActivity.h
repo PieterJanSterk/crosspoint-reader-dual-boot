@@ -4,6 +4,7 @@
 
 #include "../Activity.h"
 #include "./FileBrowserActivity.h"
+#include "OtaApps.h"
 #include "util/ButtonNavigator.h"
 
 struct RecentBook;
@@ -12,6 +13,8 @@ struct Rect;
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
+  OtaAppEntry otaApps[MAX_OTA_APPS] = {};
+  int otaAppCount = 0;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;

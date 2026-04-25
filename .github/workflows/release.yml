@@ -1,40 +1,68 @@
-name: Compile Release
+name: Build and Release
+
 on:
   push:
     tags:
-      - '*'
+      - 'v*'
+
+permissions:
+  contents: write
 
 jobs:
-  build-release:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - uses: actions/setup-python@v6
+      - uses: actions/cache@v4
         with:
-          python-version: '3.14'
+          path: |
+            ~/.cache/pip
+            ~/.platformio/.cache
+          key: ${{ runner.os }}-pio-${{ hashFiles('platformio.ini') }}
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v5
         with:
-          version: "latest"
-          enable-cache: false
+          python-version: '3.11'
 
-      - name: Install PlatformIO Core
-        run: uv pip install --system -U https://github.com/pioarduino/platformio-core/archive/refs/tags/v6.1.19.zip
+      - name: Install PlatformIO
+        run: pip install platformio
 
       - name: Build CrossPoint
         run: pio run -e gh_release
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+      - name: Merge standalone binary
+        run: |
+          pip install esptool
+          BOOT_APP0=$(find ~/.platformio -name "boot_app0.bin" | head -1)
+          esptool.py --chip esp32c3 merge_bin \
+            --flash_mode dio --flash_size 16MB \
+            -o crosspoint-${{ github.ref_name }}.bin \
+            0x0     .pio/build/gh_release/bootloader.bin \
+            0x8000  .pio/build/gh_release/partitions.bin \
+            0xe000  "$BOOT_APP0" \
+            0x10000 .pio/build/gh_release/firmware.bin
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: CrossPoint-${{ github.ref_name }}
-          path: |
-            .pio/build/gh_release/bootloader.bin
-            .pio/build/gh_release/firmware.bin
-            .pio/build/gh_release/firmware.elf
-            .pio/build/gh_release/firmware.map
-            .pio/build/gh_release/partitions.bin
+          files: crosspoint-${{ github.ref_name }}.bin
+          generate_release_notes: true
+
+      - name: Publish to typeslate website
+        env:
+          WEBSITE_PAT: ${{ secrets.WEBSITE_PAT }}
+        run: |
+          git clone https://x-access-token:${WEBSITE_PAT}@github.com/josh-websites/typeslate-website.git website
+          mkdir -p website/tools/crosspoint/firmware
+          cp crosspoint-${{ github.ref_name }}.bin website/tools/crosspoint/firmware/latest.bin
+          cp .pio/build/gh_release/firmware.bin website/tools/crosspoint/firmware/app.bin
+          echo '{"version":"${{ github.ref_name }}"}' > website/tools/crosspoint/firmware/version.json
+          cd website
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tools/crosspoint/firmware/
+          git commit -m "Update CrossPoint firmware to ${{ github.ref_name }}"
+          git push
