@@ -18,9 +18,11 @@ enum class SettingAction {
   KOReaderSync,
   OPDSBrowser,
   Network,
+  SubredditReader,
   ClearCache,
   CheckForUpdates,
   Language,
+  Bluetooth,
 };
 
 struct SettingInfo {

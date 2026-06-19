@@ -1,19 +1,22 @@
 #include "ActivityManager.h"
 
 #include <HalPowerManager.h>
+#include <esp_random.h>
 
-#include "OpdsServerStore.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
-#include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
-#include "settings/OpdsServerListActivity.h"
+#include "settings/BluetoothSettingsActivity.h"
 #include "settings/SettingsActivity.h"
+#include "CrossPointSettings.h"
+#include "game/GameActivity.h"
+#include "game/GamePickerActivity.h"
+#include "game/GameTitleActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
 void ActivityManager::begin() {
@@ -172,6 +175,12 @@ void ActivityManager::goToFileTransfer() {
 
 void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
 
+void ActivityManager::goToBluetoothSettings(bool exitOnSuccessfulConnect) {
+  pushActivity(std::make_unique<BluetoothSettingsActivity>(renderer, mappedInput,
+                                                           [] { activityManager.popActivity(); },
+                                                           exitOnSuccessfulConnect));
+}
+
 void ActivityManager::goToFileBrowser(std::string path) {
   replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
@@ -181,17 +190,29 @@ void ActivityManager::goToRecentBooks() {
 }
 
 void ActivityManager::goToBrowser() {
-  const auto& servers = OPDS_STORE.getServers();
-  // Skip the server picker when there's only one server configured
-  if (servers.size() == 1) {
-    replaceActivity(std::make_unique<OpdsBookBrowserActivity>(renderer, mappedInput, servers[0]));
-  } else {
-    replaceActivity(std::make_unique<OpdsServerListActivity>(renderer, mappedInput, true));
-  }
+  replaceActivity(std::make_unique<OpdsBookBrowserActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToReader(std::string path) {
   replaceActivity(std::make_unique<ReaderActivity>(renderer, mappedInput, std::move(path)));
+}
+
+void ActivityManager::goToGame() {
+  if constexpr (!CrossPointSettings::deepMinesEnabled) {
+    LOG_DBG("ACT", "Deep Mines is disabled in this build");
+    goHome();
+    return;
+  }
+
+  replaceActivity(std::make_unique<GamePickerActivity>(
+      renderer, mappedInput,
+      [this]() { goHome(); },
+      [this]() {
+        if (!GAME_STATE.hasSaveFile()) {
+          GAME_STATE.newGame(esp_random());
+        }
+        replaceActivity(std::make_unique<GameActivity>(renderer, mappedInput, [] { activityManager.goToGame(); }));
+      }));
 }
 
 void ActivityManager::goToSleep() {
@@ -204,8 +225,6 @@ void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
   replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
 }
-
-void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goHome() { replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput)); }
 

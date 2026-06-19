@@ -12,6 +12,7 @@ class EpubReaderMenuActivity final : public Activity {
  public:
   // Menu actions available from the reader menu.
   enum class MenuAction {
+    BT_RECONNECT,
     SELECT_CHAPTER,
     FOOTNOTES,
     GO_TO_PERCENT,
@@ -20,6 +21,7 @@ class EpubReaderMenuActivity final : public Activity {
     SCREENSHOT,
     DISPLAY_QR,
     GO_HOME,
+    BLUETOOTH,
     SYNC,
     DELETE_CACHE
   };
@@ -32,7 +34,6 @@ class EpubReaderMenuActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool isReaderActivity() const override { return true; }
 
  private:
   struct MenuItem {
@@ -53,7 +54,8 @@ class EpubReaderMenuActivity final : public Activity {
   uint8_t selectedPageTurnOption = 0;
   const std::vector<StrId> orientationLabels = {StrId::STR_PORTRAIT, StrId::STR_LANDSCAPE_CW, StrId::STR_INVERTED,
                                                 StrId::STR_LANDSCAPE_CCW};
-  const std::vector<const char*> pageTurnLabels = {I18N.get(StrId::STR_STATE_OFF), "1", "3", "6", "12"};
+  const std::vector<const char*> pageTurnLabels = {I18N.get(StrId::STR_STATE_OFF), "1", "1.5", "2", "2.5", "3",
+                                                   "3.5", "4", "4.5", "5"};
   int currentPage = 0;
   int totalPages = 0;
   int bookProgressPercent = 0;

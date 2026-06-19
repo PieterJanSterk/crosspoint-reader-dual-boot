@@ -3,8 +3,6 @@
 #include <Epub/FootnoteEntry.h>
 #include <Epub/Section.h>
 
-#include <optional>
-
 #include "EpubReaderMenuActivity.h"
 #include "activities/Activity.h"
 
@@ -13,7 +11,6 @@ class EpubReaderActivity final : public Activity {
   std::unique_ptr<Section> section = nullptr;
   int currentSpineIndex = 0;
   int nextPageNumber = 0;
-  std::optional<uint16_t> pendingPageJump;
   // Set when navigating to a footnote href with a fragment (e.g. #note1).
   // Cleared on the next render after the new section loads and resolves it to a page.
   std::string pendingAnchor;
@@ -28,7 +25,8 @@ class EpubReaderActivity final : public Activity {
   // Normalized 0.0-1.0 progress within the target spine item, computed from book percentage.
   float pendingSpineProgress = 0.0f;
   bool pendingScreenshot = false;
-  bool skipNextButtonCheck = false;  // Skip button processing for one frame after subactivity exit
+  bool skipNextButtonCheck = false;  // Skip button processing after returning from modal UI
+  bool chapterSkipConsumedForHold = false;
   bool automaticPageTurnActive = false;
 
   // Footnote support

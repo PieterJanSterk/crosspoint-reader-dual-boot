@@ -11,7 +11,6 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
-#include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
 #include "SettingsList.h"
 #include "WifiCredentialStore.h"
@@ -70,10 +69,7 @@ void applyLegacyStatusBarSettings(CrossPointSettings& settings) {
 bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   JsonDocument doc;
   doc["openEpubPath"] = s.openEpubPath;
-  JsonArray recentArr = doc["recentSleepImages"].to<JsonArray>();
-  for (int i = 0; i < CrossPointState::SLEEP_RECENT_COUNT; i++) recentArr.add(s.recentSleepImages[i]);
-  doc["recentSleepPos"] = s.recentSleepPos;
-  doc["recentSleepFill"] = s.recentSleepFill;
+  doc["lastSleepImage"] = s.lastSleepImage;
   doc["readerActivityLoadCount"] = s.readerActivityLoadCount;
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
 
@@ -91,24 +87,8 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   }
 
   s.openEpubPath = doc["openEpubPath"] | std::string("");
-  memset(s.recentSleepImages, 0, sizeof(s.recentSleepImages));
-  JsonArrayConst recentArr = doc["recentSleepImages"];
-  const int actualCount = recentArr.isNull() ? 0
-                                             : std::min(static_cast<int>(recentArr.size()),
-                                                        static_cast<int>(CrossPointState::SLEEP_RECENT_COUNT));
-  for (int i = 0; i < actualCount; i++) s.recentSleepImages[i] = recentArr[i] | static_cast<uint16_t>(0);
-  s.recentSleepPos = doc["recentSleepPos"] | static_cast<uint8_t>(0);
-  if (s.recentSleepPos >= CrossPointState::SLEEP_RECENT_COUNT)
-    s.recentSleepPos = actualCount > 0 ? s.recentSleepPos % CrossPointState::SLEEP_RECENT_COUNT : 0;
-  s.recentSleepFill = doc["recentSleepFill"] | static_cast<uint8_t>(0);
-  s.recentSleepFill = static_cast<uint8_t>(std::min(static_cast<int>(s.recentSleepFill), actualCount));
-  // Migrate legacy single-image field from old state.json (pre-recency-buffer).
-  // Only seeds the buffer if the new buffer is empty (fresh migration, not a resave).
-  if (s.recentSleepFill == 0 && !doc["lastSleepImage"].isNull()) {
-    const uint8_t legacy = doc["lastSleepImage"] | static_cast<uint8_t>(UINT8_MAX);
-    if (legacy != UINT8_MAX) s.pushRecentSleep(static_cast<uint16_t>(legacy));
-  }
-  s.readerActivityLoadCount = doc["readerActivityLoadCount"] | static_cast<uint8_t>(0);
+  s.lastSleepImage = doc["lastSleepImage"] | (uint8_t)UINT8_MAX;
+  s.readerActivityLoadCount = doc["readerActivityLoadCount"] | (uint8_t)0;
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
   return true;
 }
@@ -140,6 +120,12 @@ bool JsonSettingsIO::saveSettings(const CrossPointSettings& s, const char* path)
   doc["frontButtonConfirm"] = s.frontButtonConfirm;
   doc["frontButtonLeft"] = s.frontButtonLeft;
   doc["frontButtonRight"] = s.frontButtonRight;
+
+  // Bluetooth bonded remote metadata is not represented in SettingsList, but it
+  // must survive reboot so the firmware can reconnect to the remembered device.
+  doc["bleBondedDeviceAddr"] = s.bleBondedDeviceAddr;
+  doc["bleBondedDeviceName"] = s.bleBondedDeviceName;
+  doc["bleBondedDeviceAddrType"] = s.bleBondedDeviceAddrType;
 
   String json;
   serializeJson(doc, json);
@@ -219,6 +205,16 @@ bool JsonSettingsIO::loadSettings(CrossPointSettings& s, const char* json, bool*
   s.frontButtonRight =
       clamp(doc["frontButtonRight"] | (uint8_t)S::FRONT_HW_RIGHT, S::FRONT_BUTTON_HARDWARE_COUNT, S::FRONT_HW_RIGHT);
   CrossPointSettings::validateFrontButtonMapping(s);
+
+  const std::string bondedAddr = doc["bleBondedDeviceAddr"] | std::string(s.bleBondedDeviceAddr);
+  strncpy(s.bleBondedDeviceAddr, bondedAddr.c_str(), sizeof(s.bleBondedDeviceAddr) - 1);
+  s.bleBondedDeviceAddr[sizeof(s.bleBondedDeviceAddr) - 1] = '\0';
+
+  const std::string bondedName = doc["bleBondedDeviceName"] | std::string(s.bleBondedDeviceName);
+  strncpy(s.bleBondedDeviceName, bondedName.c_str(), sizeof(s.bleBondedDeviceName) - 1);
+  s.bleBondedDeviceName[sizeof(s.bleBondedDeviceName) - 1] = '\0';
+
+  s.bleBondedDeviceAddrType = doc["bleBondedDeviceAddrType"] | s.bleBondedDeviceAddrType;
 
   LOG_DBG("CPS", "Settings loaded from file");
 
@@ -350,58 +346,5 @@ bool JsonSettingsIO::loadRecentBooks(RecentBooksStore& store, const char* json) 
   }
 
   LOG_DBG("RBS", "Recent books loaded from file (%d entries)", store.getCount());
-  return true;
-}
-
-// ---- OpdsServerStore ----
-// Follows the same save/load pattern as WifiCredentialStore above.
-// Passwords are XOR-obfuscated with the device MAC and base64-encoded ("password_obf" key).
-
-bool JsonSettingsIO::saveOpds(const OpdsServerStore& store, const char* path) {
-  JsonDocument doc;
-
-  JsonArray arr = doc["servers"].to<JsonArray>();
-  for (const auto& server : store.getServers()) {
-    JsonObject obj = arr.add<JsonObject>();
-    obj["name"] = server.name;
-    obj["url"] = server.url;
-    obj["username"] = server.username;
-    obj["password_obf"] = obfuscation::obfuscateToBase64(server.password);
-  }
-
-  String json;
-  serializeJson(doc, json);
-  return Storage.writeFile(path, json);
-}
-
-bool JsonSettingsIO::loadOpds(OpdsServerStore& store, const char* json, bool* needsResave) {
-  if (needsResave) *needsResave = false;
-  JsonDocument doc;
-  auto error = deserializeJson(doc, json);
-  if (error) {
-    LOG_ERR("OPS", "JSON parse error: %s", error.c_str());
-    return false;
-  }
-
-  store.servers.clear();
-  JsonArray arr = doc["servers"].as<JsonArray>();
-  for (JsonObject obj : arr) {
-    if (store.servers.size() >= OpdsServerStore::MAX_SERVERS) break;
-    OpdsServer server;
-    server.name = obj["name"] | std::string("");
-    server.url = obj["url"] | std::string("");
-    server.username = obj["username"] | std::string("");
-    // Try the obfuscated key first; fall back to plaintext "password" for
-    // files written before obfuscation was added (or hand-edited JSON).
-    bool ok = false;
-    server.password = obfuscation::deobfuscateFromBase64(obj["password_obf"] | "", &ok);
-    if (!ok || server.password.empty()) {
-      server.password = obj["password"] | std::string("");
-      if (!server.password.empty() && needsResave) *needsResave = true;
-    }
-    store.servers.push_back(std::move(server));
-  }
-
-  LOG_DBG("OPS", "Loaded %zu OPDS servers from file", store.servers.size());
   return true;
 }

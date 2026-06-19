@@ -20,18 +20,22 @@ class HttpDownloader {
   };
 
   /**
-   * Fetch text content from a URL with optional credentials.
+   * Fetch text content from a URL.
+   * @param url The URL to fetch
+   * @param outContent The fetched content (output)
+   * @return true if fetch succeeded, false on error
    */
-  static bool fetchUrl(const std::string& url, std::string& outContent, const std::string& username = "",
-                       const std::string& password = "");
+  static bool fetchUrl(const std::string& url, std::string& outContent);
 
-  static bool fetchUrl(const std::string& url, Stream& stream, const std::string& username = "",
-                       const std::string& password = "");
+  static bool fetchUrl(const std::string& url, Stream& stream);
 
   /**
-   * Download a file to the SD card with optional credentials.
+   * Download a file to the SD card.
+   * @param url The URL to download
+   * @param destPath The destination path on SD card
+   * @param progress Optional progress callback
+   * @return DownloadError indicating success or failure type
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
-                                      ProgressCallback progress = nullptr, const std::string& username = "",
-                                      const std::string& password = "");
+                                      ProgressCallback progress = nullptr);
 };
