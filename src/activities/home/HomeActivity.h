@@ -4,6 +4,7 @@
 
 #include "../Activity.h"
 #include "./FileBrowserActivity.h"
+#include "OtaApps.h"
 #include "util/ButtonNavigator.h"
 
 struct RecentBook;
@@ -12,10 +13,12 @@ struct Rect;
 class HomeActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int selectorIndex = 0;
+  OtaAppEntry otaApps[MAX_OTA_APPS] = {};
+  int otaAppCount = 0;
   bool recentsLoading = false;
   bool recentsLoaded = false;
   bool firstRenderDone = false;
-  bool hasOpdsUrl = false;
+  bool hasOpdsServers = false;
   bool coverRendered = false;      // Track if cover has been rendered once
   bool coverBufferStored = false;  // Track if cover buffer is stored
   uint8_t* coverBuffer = nullptr;  // HomeActivity's own buffer for cover image
@@ -25,7 +28,6 @@ class HomeActivity final : public Activity {
   void onRecentsOpen();
   void onSettingsOpen();
   void onFileTransferOpen();
-  void onGameOpen();
   void onOpdsBrowserOpen();
 
   int getMenuItemCount() const;
@@ -34,7 +36,6 @@ class HomeActivity final : public Activity {
   void freeCoverBuffer();     // Free the stored cover buffer
   void loadRecentBooks(int maxBooks);
   void loadRecentCovers(int coverHeight);
-  int getRecentBookProgressPercent(const RecentBook& book) const;
 
  public:
   explicit HomeActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
