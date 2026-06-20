@@ -25,7 +25,7 @@ class ChapterHtmlSlimParser {
   std::shared_ptr<Epub> epub;
   const std::string& filepath;
   GfxRenderer& renderer;
-  std::function<void(std::unique_ptr<Page>, uint16_t)> completePageFn;
+  std::function<void(std::unique_ptr<Page>)> completePageFn;
   std::function<void()> popupFn;  // Popup callback
   int depth = 0;
   int skipUntilDepth = INT_MAX;
@@ -53,6 +53,7 @@ class ChapterHtmlSlimParser {
   std::string contentBase;
   std::string imageBasePath;
   int imageCounter = 0;
+  bool hadSupportedImageFailure = false;
 
   // Style tracking (replaces depth-based approach)
   struct StyleStackEntry {
@@ -74,13 +75,13 @@ class ChapterHtmlSlimParser {
   int completedPageCount = 0;
   std::vector<std::pair<std::string, uint16_t>> anchorData;
   std::string pendingAnchorId;  // deferred until after previous text block is flushed
-  uint16_t xpathParagraphIndex = 0;
 
   // Footnote link tracking
   bool insideFootnoteLink = false;
   int footnoteLinkDepth = -1;
-  FootnoteEntry currentFootnote = {};
+  char currentFootnoteLinkText[24] = {};
   int currentFootnoteLinkTextLen = 0;
+  char currentFootnoteLinkHref[64] = {};
   std::vector<std::pair<int, FootnoteEntry>> pendingFootnotes;  // <wordIndex, entry>
   int wordsExtractedInBlock = 0;
 
@@ -99,7 +100,7 @@ class ChapterHtmlSlimParser {
                                  const int fontId, const float lineCompression, const bool extraParagraphSpacing,
                                  const uint8_t paragraphAlignment, const uint16_t viewportWidth,
                                  const uint16_t viewportHeight, const bool hyphenationEnabled,
-                                 const std::function<void(std::unique_ptr<Page>, uint16_t)>& completePageFn,
+                                 const std::function<void(std::unique_ptr<Page>)>& completePageFn,
                                  const bool embeddedStyle, const std::string& contentBase,
                                  const std::string& imageBasePath, const uint8_t imageRendering = 0,
                                  const std::function<void()>& popupFn = nullptr, const CssParser* cssParser = nullptr)
@@ -126,4 +127,5 @@ class ChapterHtmlSlimParser {
   bool parseAndBuildPages();
   void addLineToPage(std::shared_ptr<TextBlock> line);
   const std::vector<std::pair<std::string, uint16_t>>& getAnchors() const { return anchorData; }
+  bool hadSupportedImageFailureDuringParse() const { return hadSupportedImageFailure; }
 };

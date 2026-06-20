@@ -4,7 +4,7 @@
 #include <Serialization.h>
 #include <ZipFile.h>
 
-#include <deque>
+#include <vector>
 
 #include "FsHelpers.h"
 
@@ -33,7 +33,6 @@ bool BookMetadataCache::beginContentOpfPass() {
 }
 
 bool BookMetadataCache::endContentOpfPass() {
-  // Explicit close() required: member variable persists beyond function scope
   spineFile.close();
   return true;
 }
@@ -45,14 +44,13 @@ bool BookMetadataCache::beginTocPass() {
     return false;
   }
   if (!Storage.openFileForWrite("BMC", cachePath + tmpTocBinFile, tocFile)) {
-    // Explicit close() required: member variable persists beyond function scope
     spineFile.close();
     return false;
   }
 
   if (spineCount >= LARGE_SPINE_THRESHOLD) {
     spineHrefIndex.clear();
-    spineHrefIndex.resize(spineCount);
+    spineHrefIndex.reserve(spineCount);
     spineFile.seek(0);
     for (int i = 0; i < spineCount; i++) {
       auto entry = readSpineEntry(spineFile);
@@ -60,7 +58,7 @@ bool BookMetadataCache::beginTocPass() {
       idx.hrefHash = fnvHash64(entry.href);
       idx.hrefLen = static_cast<uint16_t>(entry.href.size());
       idx.spineIndex = static_cast<int16_t>(i);
-      spineHrefIndex[i] = idx;
+      spineHrefIndex.push_back(idx);
     }
     std::sort(spineHrefIndex.begin(), spineHrefIndex.end(),
               [](const SpineHrefIndexEntry& a, const SpineHrefIndexEntry& b) {
@@ -77,7 +75,6 @@ bool BookMetadataCache::beginTocPass() {
 }
 
 bool BookMetadataCache::endTocPass() {
-  // Explicit close() required: member variables persist beyond function scope
   tocFile.close();
   spineFile.close();
 
@@ -106,13 +103,11 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   }
 
   if (!Storage.openFileForRead("BMC", cachePath + tmpSpineBinFile, spineFile)) {
-    // Explicit close() required: member variable persists beyond function scope
     bookFile.close();
     return false;
   }
 
   if (!Storage.openFileForRead("BMC", cachePath + tmpTocBinFile, tocFile)) {
-    // Explicit close() required: member variables persist beyond function scope
     bookFile.close();
     spineFile.close();
     return false;
@@ -158,7 +153,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   // Loop through spines from spine file matching up TOC indexes, calculating cumulative size and writing to book.bin
 
   // Build spineIndex->tocIndex mapping in one pass (O(n) instead of O(n*m))
-  std::deque<int16_t> spineToTocIndex(spineCount, -1);
+  std::vector<int16_t> spineToTocIndex(spineCount, -1);
   tocFile.seek(0);
   for (int j = 0; j < tocCount; j++) {
     auto tocEntry = readTocEntry(tocFile);
@@ -173,7 +168,6 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   // Pre-open zip file to speed up size calculations
   if (!zip.open()) {
     LOG_ERR("BMC", "Could not open EPUB zip for size calculations");
-    // Explicit close() required: member variables persist beyond function scope
     bookFile.close();
     spineFile.close();
     tocFile.close();
@@ -187,14 +181,14 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
   // This is O(n*log(m)) instead of O(n*m) while avoiding memory exhaustion.
   // See: https://github.com/crosspoint-reader/crosspoint-reader/issues/134
 
-  std::deque<uint32_t> spineSizes;
+  std::vector<uint32_t> spineSizes;
   bool useBatchSizes = false;
 
   if (spineCount >= LARGE_SPINE_THRESHOLD) {
     LOG_DBG("BMC", "Using batch size lookup for %d spine items", spineCount);
 
-    std::deque<ZipFile::SizeTarget> targets;
-    targets.resize(spineCount);
+    std::vector<ZipFile::SizeTarget> targets;
+    targets.reserve(spineCount);
 
     spineFile.seek(0);
     for (int i = 0; i < spineCount; i++) {
@@ -205,7 +199,7 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
       t.hash = ZipFile::fnvHash64(path.c_str(), path.size());
       t.len = static_cast<uint16_t>(path.size());
       t.index = static_cast<uint16_t>(i);
-      targets[i] = t;
+      targets.push_back(t);
     }
 
     std::sort(targets.begin(), targets.end(), [](const ZipFile::SizeTarget& a, const ZipFile::SizeTarget& b) {
@@ -271,7 +265,6 @@ bool BookMetadataCache::buildBookBin(const std::string& epubPath, const BookMeta
     writeTocEntry(bookFile, tocEntry);
   }
 
-  // Explicit close() required: member variables persist beyond function scope
   bookFile.close();
   spineFile.close();
   tocFile.close();
@@ -380,7 +373,6 @@ bool BookMetadataCache::load() {
   serialization::readPod(bookFile, version);
   if (version != BOOK_CACHE_VERSION) {
     LOG_DBG("BMC", "Cache version mismatch: expected %d, got %d", BOOK_CACHE_VERSION, version);
-    // Explicit close() required: member variable persists beyond function scope
     bookFile.close();
     return false;
   }

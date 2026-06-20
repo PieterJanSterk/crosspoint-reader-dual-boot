@@ -1,11 +1,12 @@
 #include "ChapterHtmlSlimParser.h"
 
+#include <array>
+
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Utf8.h>
-#include <XmlParserUtils.h>
 #include <expat.h>
 
 #include "../../Epub.h"
@@ -20,6 +21,53 @@ constexpr int NUM_HEADER_TAGS = sizeof(HEADER_TAGS) / sizeof(HEADER_TAGS[0]);
 // Minimum file size (in bytes) to show indexing popup - smaller chapters don't benefit from it
 constexpr size_t MIN_SIZE_FOR_POPUP = 10 * 1024;  // 10KB
 constexpr size_t PARSE_BUFFER_SIZE = 1024;
+constexpr std::array<size_t, 3> IMAGE_STREAM_CHUNK_SIZES = {1024, 768, 512};
+
+bool extractImageToCacheWithRetries(const Epub& epub, const std::string& resolvedPath,
+                                    const std::string& cachedImagePath) {
+  for (size_t attempt = 0; attempt < IMAGE_STREAM_CHUNK_SIZES.size(); ++attempt) {
+    if (Storage.exists(cachedImagePath.c_str())) {
+      Storage.remove(cachedImagePath.c_str());
+    }
+
+    FsFile cachedImageFile;
+    if (!Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
+      LOG_ERR("EHP", "Failed to open cached image for write: %s", cachedImagePath.c_str());
+      delay(20 * (attempt + 1));
+      continue;
+    }
+
+    const size_t chunkSize = IMAGE_STREAM_CHUNK_SIZES[attempt];
+    const bool extractSuccess = epub.readItemContentsToStream(resolvedPath, cachedImageFile, chunkSize);
+    cachedImageFile.flush();
+    cachedImageFile.close();
+
+    if (extractSuccess) {
+      delay(20);  // Give the SD card time to sync before probing dimensions.
+      return true;
+    }
+
+    LOG_ERR("EHP", "Image extract attempt %u failed for %s (chunk=%u)", static_cast<unsigned>(attempt + 1),
+            resolvedPath.c_str(), static_cast<unsigned>(chunkSize));
+    delay(20 * (attempt + 1));
+  }
+
+  if (Storage.exists(cachedImagePath.c_str())) {
+    Storage.remove(cachedImagePath.c_str());
+  }
+  return false;
+}
+
+bool getImageDimensionsWithRetries(ImageToFramebufferDecoder& decoder, const std::string& cachedImagePath,
+                                   ImageDimensions& dims) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    if (decoder.getDimensions(cachedImagePath, dims)) {
+      return true;
+    }
+    delay(20 * (attempt + 1));
+  }
+  return false;
+}
 
 const char* BLOCK_TAGS[] = {"p", "li", "div", "br", "blockquote"};
 constexpr int NUM_BLOCK_TAGS = sizeof(BLOCK_TAGS) / sizeof(BLOCK_TAGS[0]);
@@ -161,10 +209,6 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   if (self->skipUntilDepth < self->depth) {
     self->depth += 1;
     return;
-  }
-
-  if (strcmp(name, "p") == 0) {
-    self->xpathParagraphIndex++;
   }
 
   // Extract class, style, and id attributes
@@ -316,21 +360,14 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
             }
             std::string cachedImagePath = self->imageBasePath + std::to_string(self->imageCounter++) + ext;
 
-            // Extract image to cache file
-            FsFile cachedImageFile;
-            bool extractSuccess = false;
-            if (Storage.openFileForWrite("EHP", cachedImagePath, cachedImageFile)) {
-              extractSuccess = self->epub->readItemContentsToStream(resolvedPath, cachedImageFile, 4096);
-              cachedImageFile.flush();
-              cachedImageFile.close();
-              delay(50);  // Give SD card time to sync
-            }
+            const bool extractSuccess =
+                extractImageToCacheWithRetries(*self->epub, resolvedPath, cachedImagePath);
 
             if (extractSuccess) {
               // Get image dimensions
               ImageDimensions dims = {0, 0};
               ImageToFramebufferDecoder* decoder = ImageDecoderFactory::getDecoder(cachedImagePath);
-              if (decoder && decoder->getDimensions(cachedImagePath, dims)) {
+              if (decoder && getImageDimensionsWithRetries(*decoder, cachedImagePath, dims)) {
                 LOG_DBG("EHP", "Image dimensions: %dx%d", dims.width, dims.height);
 
                 int displayWidth = 0;
@@ -432,7 +469,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 // Create page for image - only break if image won't fit remaining space
                 if (self->currentPage && !self->currentPage->elements.empty() &&
                     (self->currentPageNextY + displayHeight > self->viewportHeight)) {
-                  self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex);
+                  self->completePageFn(std::move(self->currentPage));
                   self->completedPageCount++;
                   self->currentPage.reset(new Page());
                   if (!self->currentPage) {
@@ -467,11 +504,13 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                 self->depth += 1;
                 return;
               } else {
-                LOG_ERR("EHP", "Failed to get image dimensions");
+                self->hadSupportedImageFailure = true;
+                LOG_ERR("EHP", "Failed to get image dimensions after retries: %s", cachedImagePath.c_str());
                 Storage.remove(cachedImagePath.c_str());
               }
             } else {
-              LOG_ERR("EHP", "Failed to extract image");
+              self->hadSupportedImageFailure = true;
+              LOG_ERR("EHP", "Failed to extract image after retries: %s", resolvedPath.c_str());
             }
           }  // isFormatSupported
         }
@@ -539,9 +578,9 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       self->insideFootnoteLink = true;
       self->footnoteLinkDepth = self->depth;
-      strncpy(self->currentFootnote.href, href, sizeof(self->currentFootnote.href) - 1);
-      self->currentFootnote.href[sizeof(self->currentFootnote.href) - 1] = '\0';
-      self->currentFootnote.number[0] = '\0';
+      strncpy(self->currentFootnoteLinkHref, href, sizeof(self->currentFootnoteLinkHref) - 1);
+      self->currentFootnoteLinkHref[sizeof(self->currentFootnoteLinkHref) - 1] = '\0';
+      self->currentFootnoteLinkText[0] = '\0';
       self->currentFootnoteLinkTextLen = 0;
 
       // Apply underline style to visually indicate the link
@@ -702,29 +741,14 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
   // Collect footnote link display text (for the number label)
   // Skip whitespace and brackets to normalize noterefs like "[1]" → "1"
   if (self->insideFootnoteLink) {
-    int start = 0;
-    int end = len - 1;
-
-    // Example input and output texts:
-    // "     [  12  ]   " => "12"
-    // "   turn to 256  " => "turn to 256"
-
-    // Ignore leading whitespaces and left square brackets
-    while (start < len && (isWhitespace(s[start]) || (s[start] == '['))) {
-      ++start;
+    for (int i = 0; i < len; i++) {
+      unsigned char c = static_cast<unsigned char>(s[i]);
+      if (isWhitespace(c) || c == '[' || c == ']') continue;
+      if (self->currentFootnoteLinkTextLen < static_cast<int>(sizeof(self->currentFootnoteLinkText)) - 1) {
+        self->currentFootnoteLinkText[self->currentFootnoteLinkTextLen++] = c;
+        self->currentFootnoteLinkText[self->currentFootnoteLinkTextLen] = '\0';
+      }
     }
-
-    // Ignore trailing whitespaces and right square brackets
-    while (end >= start && (isWhitespace(s[end]) || (s[end] == ']'))) {
-      --end;
-    }
-
-    // Extract footnote link text
-    for (int i = start; (self->currentFootnoteLinkTextLen < sizeof(self->currentFootnote.number) - 1) && (i <= end);
-         ++i) {
-      self->currentFootnote.number[self->currentFootnoteLinkTextLen++] = s[i];
-    }
-    self->currentFootnote.number[self->currentFootnoteLinkTextLen] = '\0';
   }
 
   for (int i = 0; i < len; i++) {
@@ -915,11 +939,11 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
 
   // Closing a footnote link — create entry from collected text and href
   if (self->insideFootnoteLink && self->depth == self->footnoteLinkDepth) {
-    if (self->currentFootnote.number[0] != '\0' && self->currentFootnote.href[0] != '\0') {
+    if (self->currentFootnoteLinkText[0] != '\0' && self->currentFootnoteLinkHref[0] != '\0') {
       FootnoteEntry entry;
-      strncpy(entry.number, self->currentFootnote.number, sizeof(entry.number) - 1);
+      strncpy(entry.number, self->currentFootnoteLinkText, sizeof(entry.number) - 1);
       entry.number[sizeof(entry.number) - 1] = '\0';
-      strncpy(entry.href, self->currentFootnote.href, sizeof(entry.href) - 1);
+      strncpy(entry.href, self->currentFootnoteLinkHref, sizeof(entry.href) - 1);
       entry.href[sizeof(entry.href) - 1] = '\0';
       int wordIndex =
           self->wordsExtractedInBlock + (self->currentTextBlock ? static_cast<int>(self->currentTextBlock->size()) : 0);
@@ -1001,7 +1025,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   paragraphAlignmentBlockStyle.alignment = align;
   startNewTextBlock(paragraphAlignmentBlockStyle);
 
-  XML_Parser parser = XML_ParserCreate(nullptr);
+  const XML_Parser parser = XML_ParserCreate(nullptr);
   int done;
 
   if (!parser) {
@@ -1015,7 +1039,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
   FsFile file;
   if (!Storage.openFileForRead("EHP", filepath, file)) {
-    destroyXmlParser(parser);
+    XML_ParserFree(parser);
     return false;
   }
 
@@ -1034,7 +1058,10 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
     void* const buf = XML_GetBuffer(parser, PARSE_BUFFER_SIZE);
     if (!buf) {
       LOG_ERR("EHP", "Couldn't allocate memory for buffer");
-      destroyXmlParser(parser);
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
       file.close();
       return false;
     }
@@ -1043,7 +1070,10 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 
     if (len == 0 && file.available() > 0) {
       LOG_ERR("EHP", "File read error");
-      destroyXmlParser(parser);
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
       file.close();
       return false;
     }
@@ -1053,14 +1083,20 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
     if (XML_ParseBuffer(parser, static_cast<int>(len), done) == XML_STATUS_ERROR) {
       LOG_ERR("EHP", "Parse error at line %lu:\n%s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
-      destroyXmlParser(parser);
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
       file.close();
       return false;
     }
   } while (!done);
   LOG_DBG("EHP", "Time to parse and build pages: %lu ms", millis() - chapterStartTime);
 
-  destroyXmlParser(parser);
+  XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+  XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+  XML_SetCharacterDataHandler(parser, nullptr);
+  XML_ParserFree(parser);
   file.close();
 
   // Process last page if there is still text
@@ -1070,7 +1106,7 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
       anchorData.push_back({std::move(pendingAnchorId), static_cast<uint16_t>(completedPageCount)});
       pendingAnchorId.clear();
     }
-    completePageFn(std::move(currentPage), xpathParagraphIndex);
+    completePageFn(std::move(currentPage));
     completedPageCount++;
     currentPage.reset();
     currentTextBlock.reset();
@@ -1088,7 +1124,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line) {
   }
 
   if (currentPageNextY + lineHeight > viewportHeight) {
-    completePageFn(std::move(currentPage), xpathParagraphIndex);
+    completePageFn(std::move(currentPage));
     completedPageCount++;
     currentPage.reset(new Page());
     currentPageNextY = 0;

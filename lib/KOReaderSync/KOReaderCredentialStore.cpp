@@ -82,6 +82,7 @@ bool KOReaderCredentialStore::loadFromBinaryFile() {
   serialization::readPod(file, version);
   if (version != KOREADER_FILE_VERSION) {
     LOG_DBG("KRS", "Unknown file version: %u", version);
+    file.close();
     return false;
   }
 
@@ -112,6 +113,7 @@ bool KOReaderCredentialStore::loadFromBinaryFile() {
     matchMethod = DocumentMatchMethod::FILENAME;
   }
 
+  file.close();
   LOG_DBG("KRS", "Loaded KOReader credentials from binary for user: %s", username.c_str());
   return true;
 }

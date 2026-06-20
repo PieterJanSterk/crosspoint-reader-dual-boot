@@ -1,7 +1,6 @@
 #include "ContainerParser.h"
 
 #include <Logging.h>
-#include <XmlParserUtils.h>
 
 bool ContainerParser::setup() {
   parser = XML_ParserCreate(nullptr);
@@ -15,7 +14,14 @@ bool ContainerParser::setup() {
   return true;
 }
 
-ContainerParser::~ContainerParser() { destroyXmlParser(parser); }
+ContainerParser::~ContainerParser() {
+  if (parser) {
+    XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+    XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+    XML_ParserFree(parser);
+    parser = nullptr;
+  }
+}
 
 size_t ContainerParser::write(const uint8_t data) { return write(&data, 1); }
 
@@ -29,7 +35,6 @@ size_t ContainerParser::write(const uint8_t* buffer, const size_t size) {
     void* const buf = XML_GetBuffer(parser, 1024);
     if (!buf) {
       LOG_DBG("CTR", "Couldn't allocate buffer");
-      destroyXmlParser(parser);
       return 0;
     }
 
@@ -38,7 +43,6 @@ size_t ContainerParser::write(const uint8_t* buffer, const size_t size) {
 
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), remainingSize == toRead) == XML_STATUS_ERROR) {
       LOG_ERR("CTR", "Parse error: %s", XML_ErrorString(XML_GetErrorCode(parser)));
-      destroyXmlParser(parser);
       return 0;
     }
 

@@ -55,6 +55,4 @@ inline bool hasTxtExtension(const String& fileName) {
 // Check for .md extension (case-insensitive)
 bool hasMarkdownExtension(std::string_view fileName);
 
-std::string extractFolderPath(const std::string& filePath);
-
 }  // namespace FsHelpers

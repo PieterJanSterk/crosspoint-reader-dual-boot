@@ -84,6 +84,8 @@ std::string KOReaderDocumentId::calculate(const std::string& filePath) {
     }
   }
 
+  file.close();
+
   // Calculate final hash
   md5.calculate();
   std::string result = md5.toString().c_str();

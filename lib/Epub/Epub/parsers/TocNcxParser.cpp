@@ -2,7 +2,6 @@
 
 #include <FsHelpers.h>
 #include <Logging.h>
-#include <XmlParserUtils.h>
 
 #include "../BookMetadataCache.h"
 
@@ -19,7 +18,15 @@ bool TocNcxParser::setup() {
   return true;
 }
 
-TocNcxParser::~TocNcxParser() { destroyXmlParser(parser); }
+TocNcxParser::~TocNcxParser() {
+  if (parser) {
+    XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+    XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+    XML_SetCharacterDataHandler(parser, nullptr);
+    XML_ParserFree(parser);
+    parser = nullptr;
+  }
+}
 
 size_t TocNcxParser::write(const uint8_t data) { return write(&data, 1); }
 
@@ -33,7 +40,11 @@ size_t TocNcxParser::write(const uint8_t* buffer, const size_t size) {
     void* const buf = XML_GetBuffer(parser, 1024);
     if (!buf) {
       LOG_DBG("TOC", "Couldn't allocate memory for buffer");
-      destroyXmlParser(parser);
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
+      parser = nullptr;
       return 0;
     }
 
@@ -43,7 +54,11 @@ size_t TocNcxParser::write(const uint8_t* buffer, const size_t size) {
     if (XML_ParseBuffer(parser, static_cast<int>(toRead), remainingSize == toRead) == XML_STATUS_ERROR) {
       LOG_DBG("TOC", "Parse error at line %lu: %s", XML_GetCurrentLineNumber(parser),
               XML_ErrorString(XML_GetErrorCode(parser)));
-      destroyXmlParser(parser);
+      XML_StopParser(parser, XML_FALSE);                // Stop any pending processing
+      XML_SetElementHandler(parser, nullptr, nullptr);  // Clear callbacks
+      XML_SetCharacterDataHandler(parser, nullptr);
+      XML_ParserFree(parser);
+      parser = nullptr;
       return 0;
     }
 
