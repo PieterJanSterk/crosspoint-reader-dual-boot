@@ -30,8 +30,103 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build CrossPoint BLE
+      - name: Build CrossPoint BLE (app0)
         run: pio run -e gh_release
+
+      - name: Install esptool for binary merging
+        run: pip install esptool
+
+      - name: Download MicroSlate Dualboot Firmware (app1)
+        run: |
+          # Get the latest release from microslate-firmware repo
+          RELEASE_URL=$(curl -s https://api.github.com/repos/PieterJanSterk/microslate-firmware/releases/latest | grep 'browser_download_url.*microslate.*\.bin' | cut -d'"' -f4 | head -1)
+          if [ -z "$RELEASE_URL" ]; then
+            # Try dualboot binary if microslate not found
+            RELEASE_URL=$(curl -s https://api.github.com/repos/PieterJanSterk/microslate-firmware/releases/latest | grep 'browser_download_url.*dualboot.*\.bin' | cut -d'"' -f4 | head -1)
+          fi
+          echo "Downloading from: $RELEASE_URL"
+          wget -O microslate.bin "$RELEASE_URL"
+          ls -lh microslate.bin
+
+      - name: Create Merged Dualboot Binary
+        run: |
+          # Extract app0 and app1 from the built firmware
+          python -m esptool --port /dev/null read-flash 0x10000 6553600 firmware-app0.bin || true
+          
+          # Copy CP-BLE as app0
+          cp .pio/build/gh_release/firmware.bin firmware-app0.bin
+          
+          # Extract MicroSlate as app1 (need to read from offset in the downloaded binary)
+          # For now, we'll use the microslate binary directly as app1
+          # This assumes the microslate binary is for offset 0x0
+          
+          # Create merged binary by combining with proper offsets
+          # Size calculation: app0 = 6.4MB (0x640000), app1 = 6.4MB (0x640000)
+          python3 << 'EOF'
+          import struct
+          
+          # Read bootloader, partitions, app0
+          with open('.pio/build/gh_release/bootloader.bin', 'rb') as f:
+              bootloader = f.read()
+          with open('.pio/build/gh_release/partitions.bin', 'rb') as f:
+              partitions = f.read()
+          with open('.pio/build/gh_release/firmware.bin', 'rb') as f:
+              app0 = f.read()
+          with open('microslate.bin', 'rb') as f:
+              microslate_full = f.read()
+          
+          # For MicroSlate: if it's a full binary (8MB), extract app partition
+          # Otherwise, use it directly as app1
+          if len(microslate_full) > 6553600:  # Larger than single app
+              # Extract from offset 0x10000 (app0 start in merged image)
+              app1 = microslate_full[0x10000:0x10000 + 0x640000]
+          else:
+              app1 = microslate_full[:0x640000]
+          
+          # Pad if necessary
+          if len(app1) < 0x640000:
+              app1 = app1 + b'\xff' * (0x640000 - len(app1))
+          
+          # Create merged image
+          # Partition layout:
+          # 0x0000 - 0x7fff: bootloader (32KB)
+          # 0x8000 - 0x8fff: unused
+          # 0x9000 - 0xdfff: nvs (20KB)
+          # 0xe000 - 0xffff: otadata (8KB)
+          # 0x10000 - 0x64ffff: app0 (6.4MB)
+          # 0x650000 - 0xc8ffff: app1 (6.4MB)
+          # 0xc90000 - 0xfeffff: spiffs (3.5MB)
+          # 0xff0000 - 0xffffff: coredump (64KB)
+          
+          merged = bytearray(0x1000000)  # 16MB
+          merged[:] = [0xff] * len(merged)  # Fill with 0xff
+          
+          # Write bootloader
+          merged[0x0:len(bootloader)] = bootloader
+          
+          # Write partition table
+          merged[0x8000:0x8000 + len(partitions)] = partitions
+          
+          # Write app0
+          merged[0x10000:0x10000 + len(app0)] = app0
+          
+          # Write app1
+          merged[0x650000:0x650000 + len(app1)] = app1
+          
+          # Write to file
+          with open('dualboot.bin', 'wb') as f:
+              f.write(merged)
+          
+          print(f"Merged dualboot binary created: {len(merged)} bytes")
+          EOF
+
+      - name: Verify Binaries
+        run: |
+          ls -lh .pio/build/gh_release/firmware.bin
+          ls -lh microslate.bin
+          ls -lh dualboot.bin
+          ls -lh .pio/build/gh_release/bootloader.bin
+          ls -lh .pio/build/gh_release/partitions.bin
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -40,4 +135,5 @@ jobs:
             .pio/build/gh_release/firmware.bin
             .pio/build/gh_release/bootloader.bin
             .pio/build/gh_release/partitions.bin
+            dualboot.bin
           generate_release_notes: true
