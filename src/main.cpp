@@ -19,6 +19,7 @@
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
 #include "KOReaderCredentialStore.h"
+#include "OtaApps.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "activities/Activity.h"
@@ -242,6 +243,7 @@ void setup() {
   HalSystem::begin();
   gpio.begin();
   powerManager.begin();
+  registerOtaAppName("CrossPoint");
 
   // Only start serial if USB connected
   if (gpio.isUsbConnected()) {
